@@ -1,0 +1,118 @@
+gpu: 0
+num_runs: 1
+record: false
+
+data:
+  name: ffhq
+  # head: 100
+  root: /home/yhu160/kernel-diff/data/ffhq-test100  #ffhq200
+
+model:
+  name: edm_from_unet_adm
+  image_size: 256
+  num_channels: 128
+  num_res_blocks: 1
+  channel_mult: ""
+  learn_sigma: true
+  class_cond: false
+  use_checkpoint: false
+  attention_resolutions: 16
+  num_heads: 4
+  num_head_channels: 64
+  num_heads_upsample: -1
+  use_scale_shift_norm: true
+  dropout: 0.0
+  resblock_updown: true
+  use_fp16: false
+  use_new_attention_order: false
+  model_path: /home/yhu160/ffhq_10m.pt
+  diffusion:
+    img_resolution: 256
+    beta_min: 0.1
+    beta_d: 19.9
+    M: 1000
+
+kernel_model:
+  name: edm_from_kernel_unet          # ← 对应 models_kernel/__init__.py 注册名字
+  model_path: /home/yhu160/kernel-diff-v2/results-kernel_diffusion_v4_finetune/model_10000.pt
+  
+  # ─── kernel UNet 超参 ────
+  unet_cfg:                        
+    image_size: 256                 
+    kernel_size: 64              
+    # in_channels: 1
+    # y_channels: 3
+    # out_channels: 1               # 预测 (ε)
+  
+  # ─── diffusion(VP-precond) ───
+  diffusion:
+    img_resolution: 64           
+    beta_min: 0.1
+    beta_d: 19.9
+    M: 1000                       # 原 DDPM 步数
+    epsilon_t: 1.0e-3
+
+task:
+  operator:
+    name: motion_blur_circ
+    kernel_size: 64
+    intensity: 0.5
+    channels: 3
+    img_dim: 256
+    # fixed_kernel_path: /home/yuanyunhu/eyediff_v4/00000_motion_kernel.tif
+    kernel_test_path: /home/yhu160/BlindDeblur_v3/kernel_test100.npy
+  noise:
+    name: gaussian
+    sigma: 0.05
+
+sampler:
+  name: pnp_edm
+  mode: edm
+  num_iters: 200
+  num_burn_in_iters: 100
+  rho: 1
+  rho_decay_rate: 0.9
+  rho_min: 0.1
+  sigma: 0.5  #0.05*10
+  sigma_decay_rate: 0.98
+  sigma_min: 0.08   #0.05*2
+
+  kernel_rho: 50
+  kernel_rho_decay_rate: 0.9
+  kernel_rho_min: 10
+
+  num_samples_per_run: 20
+  common_kwargs:
+    num_steps: 100
+    sigma_min: null
+    sigma_max: null
+    alpha: 1
+    S_churn: 0
+    S_min: 0
+    S_max: .inf
+    S_noise: 1
+  vp_kwargs:
+    solver: euler
+    discretization: vp
+    schedule: vp
+    scaling: vp
+    epsilon_s: 1.0e-3
+  ve_kwargs:
+    solver: euler
+    discretization: ve
+    schedule: ve
+    scaling: none
+  iddpm_kwargs:
+    solver: euler
+    discretization: iddpm
+    schedule: linear
+    scaling: none
+    C_1: 0.001
+    C_2: 0.008
+    M: 1000
+  edm_kwargs:
+    solver: euler
+    discretization: edm
+    schedule: linear
+    scaling: none
+    rho: 7
