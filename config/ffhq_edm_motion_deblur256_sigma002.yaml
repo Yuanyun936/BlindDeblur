@@ -5,7 +5,7 @@ record: false
 data:
   name: ffhq
   # head: 100
-  root: /home/yhu160/kernel-diff/data/ffhq-test100  #ffhq200
+  root: /data1/1shared/huyuanyun/PnP/ffhq-datasets/ffhq-test50-new
 
 model:
   name: edm_from_unet_adm
@@ -25,7 +25,7 @@ model:
   resblock_updown: true
   use_fp16: false
   use_new_attention_order: false
-  model_path: /home/yhu160/ffhq_10m.pt
+  model_path: /data1/1shared/huyuanyun/PnP/ffhq_10m.pt
   diffusion:
     img_resolution: 256
     beta_min: 0.1
@@ -33,23 +33,23 @@ model:
     M: 1000
 
 kernel_model:
-  name: edm_from_kernel_unet          # ← 对应 models_kernel/__init__.py 注册名字
-  model_path: /home/yhu160/kernel-diff-v2/results-kernel_diffusion_v4_finetune/model_10000.pt
+  name: edm_from_kernel_unet          
+  model_path: /data1/1shared/huyuanyun/PnP/kernel_prior.pt
   
-  # ─── kernel UNet 超参 ────
+
   unet_cfg:                        
     image_size: 256                 
     kernel_size: 64              
     # in_channels: 1
     # y_channels: 3
-    # out_channels: 1               # 预测 (ε)
+    # out_channels: 1              
   
-  # ─── diffusion(VP-precond) ───
+
   diffusion:
     img_resolution: 64           
     beta_min: 0.1
     beta_d: 19.9
-    M: 1000                       # 原 DDPM 步数
+    M: 1000                      
     epsilon_t: 1.0e-3
 
 task:
@@ -60,7 +60,7 @@ task:
     channels: 3
     img_dim: 256
     # fixed_kernel_path: /home/yuanyunhu/eyediff_v4/00000_motion_kernel.tif
-    kernel_test_path: /home/yhu160/BlindDeblur_v3/kernel_test100.npy
+    kernel_test_path: /data1/1shared/huyuanyun/PnP/kernel_test100.npy
   noise:
     name: gaussian
     sigma: 0.02

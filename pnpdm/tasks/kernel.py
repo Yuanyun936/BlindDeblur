@@ -16,13 +16,7 @@ def softmax(x):
 
 
 def norm(lst: list) -> float:
-    """[summary]
-    L^2 norm of a list
-    [description]
-    Used for internals
-    Arguments:
-        lst {list} -- vector
-    """
+    """L^2 norm of a list"""
     if not isinstance(lst, list):
         raise ValueError("Norm takes a list as its argument")
 
@@ -32,21 +26,8 @@ def norm(lst: list) -> float:
     return (sum((i**2 for i in lst)))**0.5
 
 
-def polar2z(r: np.ndarray, θ: np.ndarray) -> np.ndarray:    
-    # z = r * e^(iθ)，返回复数数组
-    """[summary]
-    Takes a list of radii and angles (radians) and
-    converts them into a corresponding list of complex
-    numbers x + yi.
-    [description]
-
-    Arguments:
-        r {np.ndarray} -- radius
-        θ {np.ndarray} -- angle
-
-    Returns:
-        [np.ndarray] -- list of complex numbers r e^(i theta) as x + iy
-    """
+def polar2z(r: np.ndarray, θ: np.ndarray) -> np.ndarray:
+    """Convert polar coordinates (r, θ) to complex numbers r·e^{iθ} (x + iy)."""
     return r * np.exp(1j * θ)
 
 
@@ -78,7 +59,6 @@ class Kernel(object):
 
     def __init__(self, size: tuple = (100, 100), intensity: float=0):
 
-        # checking if size is correctly given
         if not isinstance(size, tuple):
             raise ValueError("Size must be TUPLE of 2 positive integers")
         elif len(size) != 2 or type(size[0]) != type(size[1]) != int:
@@ -86,58 +66,24 @@ class Kernel(object):
         elif size[0] < 0 or size[1] < 0:
             raise ValueError("Size must be tuple of 2 POSITIVE integers")
 
-        # check if intensity is float (int) between 0 and 1
         if type(intensity) not in [int, float, np.float32, np.float64]:
             raise ValueError("Intensity must be a number between 0 and 1")
         elif intensity < 0 or intensity > 1:
             raise ValueError("Intensity must be a number between 0 and 1")
 
-        # saving args
         self.SIZE = size
         self.INTENSITY = intensity
-
-        # deriving quantities
-
-        # we super size first and then downscale at the end for better
-        # anti-aliasing
         self.SIZEx2 = tuple([2 * i for i in size])
         self.x, self.y = self.SIZEx2
 
-        # getting length of kernel diagonal
         self.DIAGONAL = (self.x**2 + self.y**2)**0.5
 
-        # flag to see if kernel has been calculated already
         self.kernel_is_generated = False
 
     def _createPath(self):
-        """[summary]
-        creates a motion blur path with the given intensity.
-        [description]
-        Proceede in 5 steps
-        1. Get a random number of random step sizes
-        2. For each step get a random angle
-        3. combine steps and angles into a sequence of increments
-        4. create path out of increments
-        5. translate path to fit the kernel dimensions
+        """Create a motion-blur path for the given intensity.
+        """
 
-        NOTE: "random" means random but might depend on the given intensity
-        """
-        """[内部方法] _createPath
-        功能：创建具有给定强度的运动模糊路径
-        步骤：
-            1.通过 getSteps() 子函数获取随机步长：
-                `计算最大路径长度（基于对角线和强度）
-                `生成随机步长直到总长度达到最大路径长度
-            2.通过 getAngles() 子函数获取每步的角度：
-                `最大角度基于强度计算
-                `使用"抖动"概率来决定下一个角度的符号变化
-            3.将步长和角度转换为复数增量
-            4.计算路径点的累积和
-            5.计算质心并将路径居中
-            6.随机旋转路径
-            7.将复数路径转换为坐标元组列表
-        """
-        # first we find the lengths of the motion blur steps
         def getSteps():
             """[summary]
             Here we calculate the length of the steps taken by
@@ -183,25 +129,17 @@ class Kernel(object):
             that the next angle has a different sign than the previous one.
             """
 
-            # same as with the steps
 
-            # first we get the max angle in radians
             self.MAX_ANGLE = uniform(0, self.INTENSITY * pi)
 
-            # now we sample "jitter" which is the probability that the
-            # next angle has a different sign than the previous one
             self.JITTER = beta(2, 20)
-
-            # initialising angles (and sign of angle)
             angles = [uniform(low=-self.MAX_ANGLE, high=self.MAX_ANGLE)]
 
             while len(angles) < self.NUM_STEPS:
 
-                # sample next angle (absolute value)
                 angle = triangular(0, self.INTENSITY *
                                    self.MAX_ANGLE, self.MAX_ANGLE + eps)
 
-                # with jitter probability change sign wrt previous angle
                 if uniform() < self.JITTER:
                     angle *= - np.sign(angles[-1])
                 else:
@@ -209,75 +147,42 @@ class Kernel(object):
 
                 angles.append(angle)
 
-            # save angles
             self.ANGLES = np.asarray(angles)
 
-        # Get steps and angles
         getSteps()
         getAngles()
-
-        # Turn them into a path
-        ####
-
-        # we turn angles and steps into complex numbers
         complex_increments = polar2z(self.STEPS, self.ANGLES)
 
-        # generate path as the cumsum of these increments
         self.path_complex = np.cumsum(complex_increments)
 
-        # find center of mass of path
         self.com_complex = sum(self.path_complex) / self.NUM_STEPS
 
-        # Shift path s.t. center of mass lies in the middle of
-        # the kernel and a apply a random rotation
-        ###
-
-        # center it on COM
         center_of_kernel = (self.x + 1j * self.y) / 2
         self.path_complex -= self.com_complex
 
-        # randomly rotate path by an angle a in (0, pi)
         self.path_complex *= np.exp(1j * uniform(0, pi))
 
-        # center COM on center of kernel
         self.path_complex += center_of_kernel
 
-        # convert complex path to final list of coordinate tuples
         self.path = [(i.real, i.imag) for i in self.path_complex]
 
     def _createKernel(self, save_to: Path=None, show: bool=False):
-        '''
-        [内部方法] _createKernel
-        功能：创建 Motion Blur Kernel
-        步骤：
-            1.生成路径
-            2.创建一个放大尺寸的 Kernel 图像
-            3.在图像上绘制路径
-            4.对 Kernel 图像应用高斯模糊-增加真实感
-            5.将 Kernel 图像缩小到指定尺寸
-            6.转换为灰度图
-            7.标记 Kernel 已生成
-        '''
+        """Create the motion-blur kernel image (if not already generated)."""
 
-        # check if we haven't already generated a kernel
         if self.kernel_is_generated:
             return None
 
-        # get the path
         self._createPath()
 
-        # Initialise an image with super-sized dimensions
-        # (pillow Image object)
         self.kernel_image = Image.new("RGB", self.SIZEx2)
 
         # ImageDraw instance that is linked to the kernel image that
-        # we can use to draw on our kernel_image
         self.painter = ImageDraw.Draw(self.kernel_image)
 
         # draw the path
         self.painter.line(xy=self.path, width=int(self.DIAGONAL / 150))
 
-        # applying gaussian blur for realism    ##############################
+        # applying gaussian blur for realism   
         self.kernel_image = self.kernel_image.filter(
             ImageFilter.GaussianBlur(radius=int(self.DIAGONAL * 0.01)))
 
@@ -304,18 +209,12 @@ class Kernel(object):
             show {bool} -- shows kernel if true
         """
 
-        # generate kernel if needed
         self._createKernel()
 
-        # save if needed
         if save_to is not None:
-
             save_to_file = Path(save_to)
-
-            # save Kernel image
             self.kernel_image.save(save_to_file)
         else:
-            # Show kernel
             self.kernel_image.show()
 
     @property
@@ -328,7 +227,6 @@ class Kernel(object):
             numpy ndarray
         """
 
-        # generate kernel if needed
         self._createKernel()
         kernel = np.asarray(self.kernel_image, dtype=np.float32)
         kernel /= np.sum(kernel)
@@ -346,7 +244,6 @@ class Kernel(object):
             2. Pillow image object
             3. (H,W,3)-shaped numpy array
         [description]
-
         Arguments:
             image {[str, Path, Image, np.ndarray]}
             keep_image_dim {bool} -- If true, then we will
@@ -376,7 +273,7 @@ class Kernel(object):
             Returns:
                 Image -- blurred image
             """
-            # convert to RGB
+
             image = image.convert(mode="RGB")
 
             conv_mode = "valid"
@@ -391,19 +288,14 @@ class Kernel(object):
                 result_band = convolve(
                     band, self.kernelMatrix, mode=conv_mode).astype("uint8")
 
-                # collect bands
                 result_bands += result_band,
 
-            # stack bands back together
             result = np.dstack(result_bands)
 
-            # Get image
             return Image.fromarray(result)
 
-        # If image is Path
         if isinstance(image, str) or isinstance(image, Path):
 
-            # open image as Image class
             image_path = Path(image)
             image = Image.open(image_path)
 
@@ -411,15 +303,9 @@ class Kernel(object):
 
         elif isinstance(image, Image.Image):
 
-            # apply kernel
             return applyToPIL(image, keep_image_dim)
 
         elif isinstance(image, np.ndarray):
-
-            # ASSUMES we have an array of the form (H, W, 3)
-            ###
-
-            # initiate Image object from array
             image = Image.fromarray(image)
 
             return applyToPIL(image, keep_image_dim)

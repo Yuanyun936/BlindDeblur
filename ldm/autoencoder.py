@@ -45,8 +45,7 @@ class VQModelTorch(nn.Module):
 
     def decode(self, h, force_not_quantize=False):
         if not force_not_quantize:
-            # print('12345 h.shape=',h.shape) #torch.Size([16, 3, 256, 256])#第一位bs应该处理成1，而不是16
-            # 一次传入一张图，h.shape= torch.Size([1, 3, 64, 64])，quantize(h)就不会超显存
+
             quant, emb_loss, info = self.quantize(h)
         else:
             quant = h

@@ -52,7 +52,6 @@ class Denoiser_EDM:
         assert scaling in ['vp', 'none']
         assert mode in ['sde', 'pfode'], "Only SDE and PFODE modes are supported."
 
-        # Helper functions for VP & VE noise level schedules.
         vp_sigma = lambda beta_d, beta_min: lambda t: (np.e ** (0.5 * beta_d * (t ** 2) + beta_min * t) - 1) ** 0.5
         vp_sigma_deriv = lambda beta_d, beta_min: lambda t: 0.5 * (beta_min + beta_d * t) * (self.sigma(t) + 1 / self.sigma(t))
         vp_sigma_inv = lambda beta_d, beta_min: lambda sigma: ((beta_min ** 2 + 2 * beta_d * (sigma ** 2 + 1).log()).sqrt() - beta_min) / beta_d
@@ -60,7 +59,6 @@ class Denoiser_EDM:
         ve_sigma_deriv = lambda t: 0.5 / t.sqrt()
         ve_sigma_inv = lambda sigma: sigma ** 2
 
-        # Select default noise level range based on the specified time step discretization.
         if sigma_min is None:
             vp_def = vp_sigma(beta_d=19.9, beta_min=0.1)(t=epsilon_s)
             sigma_min = {'vp': vp_def, 've': 0.02, 'iddpm': 0.002, 'edm': 0.002}[discretization]
@@ -68,15 +66,12 @@ class Denoiser_EDM:
             vp_def = vp_sigma(beta_d=19.9, beta_min=0.1)(t=1)
             sigma_max = {'vp': vp_def, 've': 100, 'iddpm': 81, 'edm': 80}[discretization]
 
-        # Adjust noise levels based on what's supported by the network.[1.?]
         sigma_min = max(sigma_min, net.sigma_min)
         sigma_max = min(sigma_max, net.sigma_max)
 
-        # Compute corresponding betas for VP.
         vp_beta_d = 2 * (np.log(sigma_min ** 2 + 1) / epsilon_s - np.log(sigma_max ** 2 + 1)) / (epsilon_s - 1)
         vp_beta_min = np.log(sigma_max ** 2 + 1) - 0.5 * vp_beta_d
 
-        # Define time steps in terms of noise level.
         step_indices = torch.arange(num_steps, dtype=torch.float64, device=device)
         if discretization == 'vp':
             orig_t_steps = 1 + step_indices / (num_steps - 1) * (epsilon_s - 1)
@@ -95,7 +90,6 @@ class Denoiser_EDM:
             assert discretization == 'edm'
             sigma_steps = (sigma_max ** (1 / rho) + step_indices / (num_steps - 1) * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
 
-        # Define noise level schedule.
         if schedule == 'vp':
             self.sigma = vp_sigma(vp_beta_d, vp_beta_min)
             self.sigma_deriv = vp_sigma_deriv(vp_beta_d, vp_beta_min)
@@ -119,7 +113,6 @@ class Denoiser_EDM:
             self.s = lambda t: 1
             self.s_deriv = lambda t: 0
         
-        # Compute final time steps based on the corresponding noise levels.
         t_steps = self.sigma_inv(net.round_sigma(sigma_steps))
         self.t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])]) # t_N = 0
 
@@ -129,14 +122,12 @@ class Denoiser_EDM:
 
         # Main sampling loop. (starting from t_start with state initialized at x_noisy)
         x_next = x_noisy * self.s(self.t_steps[i_start])
-        
-        # save all x_next into a list and save it
+
         x_next_list = []
         x_next_list.append(x_next)
         
         for i, (t_cur, t_next) in enumerate(zip(self.t_steps[:-1], self.t_steps[1:])): # 0, ..., N-1
             if i < i_start:
-                # Skip the steps before i_start.
                 continue
 
             x_cur = x_next
@@ -156,45 +147,45 @@ class Denoiser_EDM:
 
         return x_next
 
-        # #--------------------------------------------------------EDM二阶
-        # for i, (t_cur, t_next) in enumerate(zip(self.t_steps[:-1], self.t_steps[1:])): # 0, ..., N-1
+        # #-----------------------------EDM second-order (Heun)---------------------------
+        # for i, (t_cur, t_next) in enumerate(zip(self.t_steps[:-1], self.t_steps[1:])):  # 0, ..., N-1
         #     if i < i_start:
-        #         # 跳过 i_start 之前的步骤
         #         continue
 
         #     x_cur = x_next
-            
-        #     # "回退"--临时增加噪声 (noise boost) - 对应原始算法中的 S_churn 部分
+        #     
+        #     # Optional "churn" step: temporarily increase noise (noise boost),
+        #     # corresponding to the S_churn part in the original EDM algorithm.
         #     if self.mode == 'sde':
         #         gamma = min(self.S_churn / self.num_steps, np.sqrt(2) - 1) if self.S_min <= t_cur <= self.S_max else 0
         #         t_hat = self.net.round_sigma(t_cur + gamma * t_cur)
         #         x_hat = x_cur + torch.sqrt(t_hat**2 - t_cur**2) * self.S_noise * torch.randn_like(x_cur)
         #     else:
-        #         # 在 PFODE 模式下不增加额外噪声
+        #         # In PFODE mode, do not add extra noise
         #         t_hat = t_cur
         #         x_hat = x_cur
-            
-        #     # Euler Step
+        #     
+        #     # Euler step
         #     denoised = self.net(x_hat / self.s(t_hat), self.sigma(t_hat)).to(torch.float32)
-            
-        #     # 计算梯度，与原始 EDM-SDE 一致
+        #     
+        #     # Compute gradient, consistent with the original EDM-SDE formulation
         #     d_cur = (x_hat - self.s(t_hat) * denoised) / t_hat
-            
-        #     # Euler 预测步骤
+        #     
+        #     # Euler prediction step
         #     x_euler = x_hat + (t_next - t_hat) * d_cur
-            
-        #     # 应用2nd-order校正（Heun 方法）
+        #     
+        #     # Apply 2nd-order correction (Heun method)
         #     if i < self.num_steps - 1 and self.solver == 'heun':
-        #         # 在下一时间步计算去噪结果
+        #         # Denoise at the next time step
         #         denoised_next = self.net(x_euler / self.s(t_next), self.sigma(t_next)).to(torch.float32)
-                
-        #         # 在下一时间步计算梯度
+        #         
+        #         # Compute gradient at the next time step
         #         d_prime = (x_euler - self.s(t_next) * denoised_next) / t_next
-                
-        #         # 使用平均梯度进行修正步骤（Heun 方法）
+        #         
+        #         # Use the average gradient for the Heun correction
         #         x_next = x_hat + (t_next - t_hat) * (0.5 * d_cur + 0.5 * d_prime)
         #     else:
-        #         # 没有二阶校正时，直接使用 Euler 结果
+        #         # Without second-order correction, fall back to Euler result
         #         x_next = x_euler
 
         # return x_next

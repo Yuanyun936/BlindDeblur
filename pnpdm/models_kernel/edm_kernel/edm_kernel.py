@@ -66,7 +66,6 @@ def create_edm_from_kernel_unet(
     if unet_cfg is None:
         unet_cfg = {}
 
-    # ① 构建 & 加载 KernelUNet
     net = KernelUNet(**unet_cfg).to(device)
     ckpt = torch.load(model_path, map_location=device)
     state = ckpt["model"] if "model" in ckpt else ckpt
@@ -75,6 +74,6 @@ def create_edm_from_kernel_unet(
     missing, unexp = net.load_state_dict(state, strict=False)
     print(f'[kernel] loaded ✓  missing={len(missing)}  unexpected={len(unexp)}')
 
-    # ② 封装为 EDM-compatible VP Preconditioned kernel denoiser
+    # EDM-compatible VP Preconditioned kernel denoiser
     wrapper = VPPrecondKernel(net, **diffusion).to(device)
     return wrapper

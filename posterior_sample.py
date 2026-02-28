@@ -9,36 +9,30 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 from PIL import Image
 from types import SimpleNamespace
-# Parallel
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-
-# PnP-DM modules
 from pnpdm.data import get_dataset, get_dataloader
-from pnpdm.tasks import get_operator, get_noise, MotionBlurCircular     #, RetinalBlurCircular
+from pnpdm.tasks import get_operator, get_noise, MotionBlurCircular
 from pnpdm.models import get_model as get_img_model
 from pnpdm.models_kernel import get_model as get_kernel_model
 from pnpdm.samplers import get_sampler
-
 # Metrics
 from monai.metrics import PSNRMetric, SSIMMetric
 from taming.modules.losses.lpips import LPIPS
 
 import csv
-
-#
 from guided_diffusion.ddpm.simplified_kernel_diffusion import SimplifiedKernelDiffusion
 from guided_diffusion.models.unet_kernel_y import KernelUNet
 
 def setup_distributed():
-    """设置分布式训练环境"""
-    # 环境变量由 torchrun 自动设置
+    """Set up the distributed runtime environment."""
+    # Environment variables (RANK, WORLD_SIZE, LOCAL_RANK) are set by torchrun
     rank = int(os.environ.get("RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     
-    # 如果 MASTER_ADDR 和 MASTER_PORT 未设置，设置默认值
+    # Set default MASTER_ADDR and MASTER_PORT if not provided
     if "MASTER_ADDR" not in os.environ:
         os.environ["MASTER_ADDR"] = "localhost"
     if "MASTER_PORT" not in os.environ:
@@ -58,14 +52,12 @@ def load_config(config_path):
     return config
 
 
-
 def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
-    # 设置分布式环境
+
     rank, world_size, local_rank = setup_distributed()
     is_main_process = rank == 0
 
     config = load_config(config_path)
-    
     config['record'] = record
     config['num_runs'] = num_runs
 
@@ -78,8 +70,6 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
     if output_dir is None:
         output_dir = Path("./results") / Path(config_path).stem
     
-
-    
     # prepare dataloader
     transform = transforms.Compose([
         transforms.Normalize((0.5), (0.5))
@@ -89,31 +79,24 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
         transforms.Lambda(lambda x: x.clamp(0, 1).detach())
     ])
 
-    model = get_img_model(**config['model'])    # 注：此处之后可以给kdiff也写一个函数（为了一致-“清晰”）
-    # operator = get_operator(**config['task']['operator'], device=device)
-
-
-    # ------------- 0. 读取 config 并抽取路径 -----------------
+    # Image prior model (EDM)
+    model = get_img_model(**config['model'])
+    
     op_cfg = config['task']['operator'].copy()
-    kernel_test_path = op_cfg.pop('kernel_test_path', None)  # 弹掉多余键
-
-    # ------------- 1. 如给定路径则马上加载 --------------------
+    kernel_test_path = op_cfg.pop('kernel_test_path', None)
     if kernel_test_path:
-        kernel_bank = np.load(kernel_test_path)              # shape (100, H, W)
-        op_cfg['kernel_bank'] = kernel_bank                  # 放进构造参数
+        kernel_bank = np.load(kernel_test_path) 
+        op_cfg['kernel_bank'] = kernel_bank
     else:
         kernel_bank = None
 
-    # ------------- 2. 创建 operator 时一并传入 ----------------
-    operator = get_operator(**op_cfg, device=device)         # <-- kernel_bank 已带进去
+    operator = get_operator(**op_cfg, device=device)
     noiser = get_noise(**config['task']['noise'])
     dataset = get_dataset(**config['data'], transform=transform)
-
 
     if is_main_process and kernel_bank is not None:
         print(f"[kernel_bank] loaded {kernel_bank.shape} kernels from {kernel_test_path}")
 
-    # Create distributed sampler for the dataset
     dist_sampler = DistributedSampler(
         dataset, 
         num_replicas=world_size,
@@ -132,15 +115,13 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
 
     num_test_images = len(dataset)
 
-    # load model---------- 1. 图像 EDM ----------
-    # model = get_img_model(**vars(model_config))
+    # load image EDM model
     model = model.to(device)
-    # Wrap model with DDP
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
     model.eval()
 
-    # ---------- 2. Kernel EDM ----------
+    # load kernel EDM model (if configured)
     if 'kernel_model' in config:
         kdiff = get_kernel_model(**config['kernel_model']).to(device)
         kdiff.eval()
@@ -151,7 +132,6 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
     # load sampler
     sampler_config = SimpleNamespace(**config['sampler'])
     sampler = get_sampler(sampler_config, model=model, kdiff=kdiff, operator=operator, noiser=noiser, device=device)
-
 
     # working directory
     exp_name = '_'.join([operator.display_name, noiser.display_name, sampler.display_name])
@@ -187,9 +167,7 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
             ])
 
     for i, ref_img in enumerate(dataloader):
-        # print(f"Processing image {i+1}/{num_test_images} on rank {rank}...")
-        # continue
-        # Get global index across all processes
+
         global_idx = i * world_size + rank
         file_idx = f"{global_idx:05d}"
         
@@ -197,17 +175,14 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
         ref_img = ref_img.to(device)
         cmap = 'gray' if ref_img.shape[1] == 1 else None
 
-        # # 只有当没有指定fixed kernel路径时才 Regenerate kernel for motion blur
-        # if isinstance(operator, MotionBlurCircular):
-        #     if 'fixed_kernel_path' not in config['task']['operator'] or not config['task']['operator']['fixed_kernel_path']:
-        #         operator.generate_kernel_(seed=global_idx)
-            # ───────── ② 为每张图像设置指定 kernel ──────────
         if isinstance(operator, MotionBlurCircular):
-            if hasattr(operator, 'kernel_bank'):           # 使用预置 kernel
+            # Prefer using a preset kernel_bank when it exists and is not None
+            if getattr(operator, 'kernel_bank', None) is not None:
                 operator.generate_kernel_(index=i)
                 print(f"Using kernel from kernel_bank at index {i}")
+            # Otherwise, if no fixed kernel is specified, fall back to random kernel generation
             elif not config['task']['operator'].get('fixed_kernel_path'):
-                operator.generate_kernel_(seed=global_idx) # 旧的随机策略
+                operator.generate_kernel_(seed=global_idx)
 
 
         # Forward measurement model (Ax + n)
@@ -230,7 +205,8 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
             if is_main_process or world_size == 1:
                 plt.imsave(os.path.join(out_path, 'meas', file_idx+'.png'), log["meas"], cmap=cmap)
                 if hasattr(operator, 'kernel'):
-                    plt.imsave(os.path.join(out_path, 'meas', file_idx+'_kernel.png'), operator.kernel.detach().cpu())
+                    # save generated kernel visualization alongside ground-truth image
+                    plt.imsave(os.path.join(out_path, 'gt', file_idx+'_kernel.png'), operator.kernel.detach().cpu())
                     kernel_np = operator.kernel.detach().cpu().numpy()                
 
         except:
@@ -365,12 +341,12 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
             meta_log["statistics_based_on_mean"]["consistency_last_of_all_runs"].append(log["consistency_mean"][-1])
             meta_log["statistics_based_on_mean"]["consistency_best_of_all_runs"].append(np.amin(log["consistency_mean"]))
 
-    # Synchronize processes before gathering results
+
     dist.barrier()
     
     # Gather all meta_log data from different processes
     if world_size > 1:
-        # Convert meta_log to a format that can be gathered
+
         all_meta_logs = [None] * world_size if is_main_process else None
         meta_log_tensor = torch.tensor([1], device=device)  # Dummy tensor to synchronize with
         dist.barrier()  # Ensure all processes have reached this point
@@ -424,8 +400,6 @@ def posterior_sample(config_path, output_dir=None, record=False, num_runs=1):
             f.write(f'consistency (gt) (avg over {num_test_images} test images): {np.mean(meta_log["consistency_gt"])}\n')
             f.close()
 
-    
-    
     
     dist.barrier()  # Ensure all processes wait before cleaning up
     dist.destroy_process_group()

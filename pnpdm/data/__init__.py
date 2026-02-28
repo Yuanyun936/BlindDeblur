@@ -31,12 +31,12 @@ def get_dataloader(
         train: bool,
         sampler=None
     ):
-    # 如果提供了sampler，则使用它并关闭shuffle
+
     if sampler is not None:
         return DataLoader(
             dataset,
             batch_size,
-            shuffle=False,  # 当使用采样器时，shuffle必须为False
+            shuffle=False,  # sampler: shuffle should be False
             num_workers=num_workers,
             drop_last=train,
             sampler=sampler
